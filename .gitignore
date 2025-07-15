@@ -163,4 +163,5 @@ anthropic_key.txt
 
 # Local configuration
 local_config.yaml
-local_config.json 
+local_config.json
+config.yaml 

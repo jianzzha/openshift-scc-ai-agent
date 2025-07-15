@@ -1,0 +1,59 @@
+# OpenShift SCC AI Agent Configuration Example
+# Copy this file to config.yaml and customize as needed
+
+# OpenAI Configuration
+openai:
+  api_key: "your-openai-api-key-here"
+  model: "gpt-4"
+  temperature: 0.1
+  max_tokens: 2000
+
+# Alternative AI Providers (uncomment to use)
+# anthropic:
+#   api_key: "your-anthropic-api-key-here"
+#   model: "claude-3-sonnet-20240229"
+# 
+# mistral:
+#   api_key: "your-mistral-api-key-here"
+#   model: "mistral-medium"
+
+# OpenShift Configuration
+openshift:
+  kubeconfig_path: "~/.kube/config"
+  context: ""  # Leave empty to use current context
+  verify_ssl: true
+  timeout: 30
+
+# SCC Generation Settings
+scc:
+  default_priority: 10
+  optimize_by_default: true
+  include_security_annotations: true
+  use_least_privilege: true
+  
+# Deployment Settings
+deployment:
+  max_retries: 3
+  retry_delay: 5
+  dry_run: false
+  wait_for_ready: true
+  timeout: 300
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s | %(levelname)s | %(message)s"
+  file: ""  # Leave empty to log to console only
+
+# Output Settings
+output:
+  format: "table"  # table, json, yaml
+  colors: true
+  verbose: false
+  
+# Security Settings
+security:
+  allowed_capabilities: []
+  blocked_capabilities: ["SYS_ADMIN", "NET_ADMIN"]
+  require_drop_all: true
+  default_seccomp_profile: "runtime/default" 

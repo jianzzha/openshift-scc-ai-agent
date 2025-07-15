@@ -23,18 +23,68 @@ An intelligent AI-powered tool for analyzing Kubernetes/OpenShift YAML manifests
 
 ### Install Dependencies
 
+1. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
 ### Setup Environment
 
+You can configure the application using environment variables or a configuration file:
+
+**Option 1: Environment Variables**
 ```bash
 # Required for AI features
 export OPENAI_API_KEY=your-openai-api-key
 
 # Optional: specify kubeconfig location
 export KUBECONFIG=~/.kube/config
+```
+
+**Option 2: Configuration File**
+```bash
+# Copy the example configuration file
+cp config.example.yaml config.yaml
+
+# Edit with your settings
+nano config.yaml
+```
+
+## Running the Application
+
+You can run the CLI application in several ways:
+
+### Method 1: Direct execution with virtual environment
+```bash
+# Activate virtual environment and run
+source venv/bin/activate
+python main.py --help
+```
+
+### Method 2: Using the shell script wrapper (Linux/macOS)
+```bash
+# Make the script executable (one-time setup)
+chmod +x run.sh
+
+# Run the application
+./run.sh --help
+./run.sh analyze examples/nginx-deployment.yaml
+./run.sh generate-scc examples/nginx-deployment.yaml --scc-name nginx-scc
+```
+
+### Method 3: Install as a package (optional)
+```bash
+# Install in development mode
+pip install -e .
+
+# Run from anywhere
+scc-ai-agent --help
 ```
 
 ## Quick Start
