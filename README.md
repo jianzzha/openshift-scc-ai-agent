@@ -6,7 +6,7 @@ An intelligent AI-powered tool for analyzing Kubernetes/OpenShift YAML manifests
 
 - **🔍 Intelligent Manifest Analysis**: Analyzes YAML manifests to extract security requirements
 - **🛡️ SCC Generation**: Automatically generates Security Context Constraints based on manifest requirements
-- **🤖 AI-Powered Adjustments**: Uses OpenAI/Anthropic to analyze deployment failures and suggest SCC fixes
+- **🤖 AI-Powered Adjustments**: Uses OpenAI (currently supported) to analyze deployment failures and suggest SCC fixes
 - **⚡ Auto-Deployment**: Automatically deploys manifests with iterative SCC adjustment
 - **🔧 OpenShift Integration**: Direct integration with OpenShift clusters
 - **📊 Rich CLI Interface**: Beautiful command-line interface with progress bars and tables
@@ -19,7 +19,9 @@ An intelligent AI-powered tool for analyzing Kubernetes/OpenShift YAML manifests
 - Python 3.8 or higher
 - OpenShift CLI (`oc`) installed and configured
 - Valid OpenShift cluster access
-- OpenAI API key (for AI features)
+- OpenAI API key (for AI-powered features like `auto-deploy`)
+
+> **Note**: OpenAI API key is only required for AI-powered features. Basic manifest analysis and SCC generation work without it.
 
 ### Install Dependencies
 
@@ -312,25 +314,43 @@ The tool analyzes manifests for various security requirements:
 - Provides gradual optimization approach
 
 ### AI Providers Support
-- **OpenAI**: GPT-4 for comprehensive analysis
-- **Anthropic**: Claude for security-focused analysis (planned)
-- **Mistral**: Open-source alternative (planned)
-- **Local**: Self-hosted models (planned)
+- **OpenAI**: GPT-4 for comprehensive analysis ✅ **Currently Supported**
+- **Anthropic**: Claude for security-focused analysis ⏳ **Planned** (dependencies included)
+- **Mistral**: Open-source alternative ⏳ **Planned** (dependencies included)
+- **Local**: Self-hosted models ⏳ **Planned**
+
+> **⚠️ Important**: Currently only OpenAI is fully implemented and functional. Other providers are planned for future releases but will show warning messages if used.
 
 ## Configuration
 
 ### Environment Variables
 
 ```bash
-# AI Configuration
+# AI Configuration (Required for AI features)
 export OPENAI_API_KEY=your-openai-api-key
-export ANTHROPIC_API_KEY=your-anthropic-api-key
+# export ANTHROPIC_API_KEY=your-anthropic-api-key  # Not yet functional
 
 # Cluster Configuration
 export KUBECONFIG=~/.kube/config
 
 # Logging
 export LOG_LEVEL=INFO
+```
+
+### Using Without AI Features
+
+If you don't have an OpenAI API key, you can still use most features:
+
+```bash
+# These commands work without AI:
+./run.sh analyze examples/nginx-deployment.yaml
+./run.sh generate-scc examples/nginx-deployment.yaml --scc-name nginx-scc
+./run.sh connect
+./run.sh list-sccs
+./run.sh get-scc restricted
+
+# This command requires OpenAI API key:
+./run.sh auto-deploy examples/nginx-deployment.yaml  # Uses AI for failure analysis
 ```
 
 ### Kubeconfig Setup
