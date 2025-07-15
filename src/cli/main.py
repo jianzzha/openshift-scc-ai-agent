@@ -143,6 +143,11 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
     else:
         console.print(Syntax(yaml.dump(scc_manifest, default_flow_style=False), "yaml"))
     
+    # Generate ClusterRole for SCC
+    console.print("\n[bold]Generated ClusterRole:[/bold]")
+    clusterrole = scc_generator.create_clusterrole(scc_name)
+    console.print(Syntax(yaml.dump(clusterrole, default_flow_style=False), "yaml"))
+    
     # Generate role bindings for service accounts
     console.print("\n[bold]Generated Role Bindings:[/bold]")
     for sa in analysis.service_accounts:
@@ -272,6 +277,12 @@ def auto_deploy(ctx, manifest_path, scc_name, kubeconfig, ai_provider, api_key, 
     # Deploy SCC
     if not client.create_scc(current_scc):
         console.print("[red]✗ Failed to create initial SCC[/red]")
+        sys.exit(1)
+    
+    # Create ClusterRole for SCC
+    clusterrole = scc_generator.create_clusterrole(scc_name)
+    if not client.create_clusterrole(clusterrole):
+        console.print("[red]✗ Failed to create ClusterRole[/red]")
         sys.exit(1)
     
     # Create role bindings

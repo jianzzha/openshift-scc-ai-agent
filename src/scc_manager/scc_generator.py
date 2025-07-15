@@ -277,6 +277,33 @@ class SCCGenerator:
         
         return rolebinding
     
+    def create_clusterrole(self, scc_name: str) -> Dict[str, Any]:
+        """Create a ClusterRole for the SCC"""
+        logger.info(f"Creating ClusterRole for SCC '{scc_name}'")
+        
+        clusterrole = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {
+                "name": f"system:openshift:scc:{scc_name}",
+                "annotations": {
+                    "generated-by": "openshift-scc-ai-agent",
+                    "generated-at": datetime.now().isoformat(),
+                    "kubernetes.io/description": f"ClusterRole for SCC {scc_name}"
+                }
+            },
+            "rules": [
+                {
+                    "apiGroups": ["security.openshift.io"],
+                    "resources": ["securitycontextconstraints"],
+                    "verbs": ["use"],
+                    "resourceNames": [scc_name]
+                }
+            ]
+        }
+        
+        return clusterrole
+    
     def create_clusterrolebinding(self, scc_name: str, service_account: str, namespace: str) -> Dict[str, Any]:
         """Create a ClusterRoleBinding to associate a service account with an SCC"""
         logger.info(f"Creating ClusterRoleBinding for SA '{service_account}' in namespace '{namespace}' to SCC '{scc_name}'")

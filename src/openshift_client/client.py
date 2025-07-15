@@ -327,7 +327,43 @@ class OpenShiftClient:
         except Exception as e:
             logger.error(f"Error creating RoleBinding: {str(e)}")
             return False
-    
+        
+    def create_clusterrole(self, clusterrole_manifest: Dict[str, Any]) -> bool:
+        """
+        Create a ClusterRole
+        
+        Args:
+            clusterrole_manifest: ClusterRole manifest as dictionary
+            
+        Returns:
+            bool: True if creation successful
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return False
+        
+        try:
+            # Get ClusterRole resource
+            cr_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="ClusterRole"
+            )
+            
+            result = cr_resource.create(body=clusterrole_manifest)
+            logger.info(f"Created ClusterRole: {result.metadata.name}")
+            return True
+            
+        except ApiException as e:
+            if e.status == 409:  # Already exists
+                logger.info(f"ClusterRole {clusterrole_manifest['metadata']['name']} already exists")
+                return True
+            else:
+                logger.error(f"Failed to create ClusterRole: {str(e)}")
+                return False
+        except Exception as e:
+            logger.error(f"Error creating ClusterRole: {str(e)}")
+            return False
+        
     def create_clusterrolebinding(self, clusterrolebinding_manifest: Dict[str, Any]) -> bool:
         """
         Create a ClusterRoleBinding
