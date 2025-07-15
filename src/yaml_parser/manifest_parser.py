@@ -136,11 +136,14 @@ class ManifestParser:
                     
                     # Extract service account info
                     if kind == 'ServiceAccount':
-                        sa_info = ServiceAccountInfo(
-                            name=resource_name,
-                            namespace=namespace
-                        )
-                        service_accounts.append(sa_info)
+                        # Check if we already have this service account
+                        existing_sa = next((sa for sa in service_accounts if sa.name == resource_name and sa.namespace == namespace), None)
+                        if not existing_sa:
+                            sa_info = ServiceAccountInfo(
+                                name=resource_name,
+                                namespace=namespace
+                            )
+                            service_accounts.append(sa_info)
                     elif kind in self.workload_kinds:
                         sa_name = self._extract_service_account(doc)
                         if sa_name:
