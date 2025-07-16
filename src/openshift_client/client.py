@@ -879,3 +879,205 @@ class OpenShiftClient:
             return order_priority.get(kind, 100)
         
         return sorted(manifests, key=get_priority) 
+
+    def get_clusterrole(self, clusterrole_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a ClusterRole by name
+        
+        Args:
+            clusterrole_name: Name of the ClusterRole
+            
+        Returns:
+            Optional[Dict]: ClusterRole manifest or None if not found
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return None
+        
+        try:
+            cr_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="ClusterRole"
+            )
+            
+            clusterrole = cr_resource.get(name=clusterrole_name)
+            return clusterrole.to_dict()
+            
+        except ResourceNotFoundError:
+            logger.debug(f"ClusterRole {clusterrole_name} not found")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting ClusterRole: {str(e)}")
+            return None
+    
+    def delete_clusterrole(self, clusterrole_name: str) -> bool:
+        """
+        Delete a ClusterRole
+        
+        Args:
+            clusterrole_name: Name of the ClusterRole to delete
+            
+        Returns:
+            bool: True if deletion successful
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return False
+        
+        try:
+            cr_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="ClusterRole"
+            )
+            
+            cr_resource.delete(name=clusterrole_name)
+            logger.info(f"Deleted ClusterRole: {clusterrole_name}")
+            return True
+            
+        except ResourceNotFoundError:
+            logger.debug(f"ClusterRole {clusterrole_name} not found")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting ClusterRole: {str(e)}")
+            return False
+    
+    def get_rolebinding(self, rolebinding_name: str, namespace: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a RoleBinding by name and namespace
+        
+        Args:
+            rolebinding_name: Name of the RoleBinding
+            namespace: Namespace of the RoleBinding
+            
+        Returns:
+            Optional[Dict]: RoleBinding manifest or None if not found
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return None
+        
+        try:
+            rb_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="RoleBinding"
+            )
+            
+            rolebinding = rb_resource.get(name=rolebinding_name, namespace=namespace)
+            return rolebinding.to_dict()
+            
+        except ResourceNotFoundError:
+            logger.debug(f"RoleBinding {rolebinding_name} not found in namespace {namespace}")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting RoleBinding: {str(e)}")
+            return None
+    
+    def delete_rolebinding(self, rolebinding_name: str, namespace: str) -> bool:
+        """
+        Delete a RoleBinding
+        
+        Args:
+            rolebinding_name: Name of the RoleBinding to delete
+            namespace: Namespace of the RoleBinding
+            
+        Returns:
+            bool: True if deletion successful
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return False
+        
+        try:
+            rb_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="RoleBinding"
+            )
+            
+            rb_resource.delete(name=rolebinding_name, namespace=namespace)
+            logger.info(f"Deleted RoleBinding: {rolebinding_name} in namespace {namespace}")
+            return True
+            
+        except ResourceNotFoundError:
+            logger.debug(f"RoleBinding {rolebinding_name} not found in namespace {namespace}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting RoleBinding: {str(e)}")
+            return False
+    
+    def find_clusterroles_for_scc(self, scc_name: str) -> List[str]:
+        """
+        Find ClusterRoles that reference a specific SCC
+        
+        Args:
+            scc_name: Name of the SCC
+            
+        Returns:
+            List[str]: List of ClusterRole names that reference the SCC
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return []
+        
+        try:
+            cr_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="ClusterRole"
+            )
+            
+            clusterroles = cr_resource.get()
+            matching_roles = []
+            
+            for cr in clusterroles.items:
+                rules = cr.get('rules', [])
+                for rule in rules:
+                    resource_names = rule.get('resourceNames', [])
+                    if scc_name in resource_names:
+                        matching_roles.append(cr.metadata.name)
+                        break
+            
+            return matching_roles
+            
+        except Exception as e:
+            logger.error(f"Error finding ClusterRoles for SCC {scc_name}: {str(e)}")
+            return []
+    
+    def find_rolebindings_for_scc(self, scc_name: str) -> List[Dict[str, str]]:
+        """
+        Find RoleBindings that reference ClusterRoles for a specific SCC
+        
+        Args:
+            scc_name: Name of the SCC
+            
+        Returns:
+            List[Dict[str, str]]: List of RoleBinding info with 'name' and 'namespace'
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return []
+        
+        try:
+            rb_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="RoleBinding"
+            )
+            
+            # Get all RoleBindings from all namespaces
+            rolebindings = rb_resource.get()
+            matching_bindings = []
+            
+            expected_clusterrole_name = f"system:openshift:scc:{scc_name}"
+            
+            for rb in rolebindings.items:
+                role_ref = rb.get('roleRef', {})
+                if (role_ref.get('kind') == 'ClusterRole' and 
+                    role_ref.get('name') == expected_clusterrole_name):
+                    matching_bindings.append({
+                        'name': rb.metadata.name,
+                        'namespace': rb.metadata.namespace
+                    })
+            
+            return matching_bindings
+            
+        except Exception as e:
+            logger.error(f"Error finding RoleBindings for SCC {scc_name}: {str(e)}")
+            return [] 

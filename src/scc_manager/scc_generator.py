@@ -829,3 +829,109 @@ class SCCGenerator:
             "supplementalGroups": {"type": "RunAsAny"},
             "volumes": ["configMap", "downwardAPI", "emptyDir", "persistentVolumeClaim", "projected", "secret"]
         } 
+
+    def detect_original_scc_name_from_manifest(self, analysis: ManifestAnalysis) -> Optional[str]:
+        """
+        Detect the original SCC name from the manifest to handle renames
+        
+        Args:
+            analysis: Manifest analysis
+            
+        Returns:
+            Optional[str]: Original SCC name from manifest or None if not found
+        """
+        from ..yaml_parser.manifest_parser import ManifestParser
+        
+        parser = ManifestParser()
+        rbac_resources = parser.extract_existing_rbac_resources(analysis.file_path)
+        manifest_scc = rbac_resources.get("scc")
+        
+        if manifest_scc:
+            return manifest_scc["name"]
+        
+        return None
+    
+    def cleanup_old_rbac_resources(self, old_scc_name: str, new_scc_name: str, 
+                                   service_accounts: List, openshift_client) -> bool:
+        """
+        Clean up old RBAC resources when SCC name changes
+        
+        Args:
+            old_scc_name: Original SCC name
+            new_scc_name: New SCC name
+            service_accounts: List of service accounts
+            openshift_client: OpenShift client
+            
+        Returns:
+            bool: True if cleanup successful
+        """
+        if not openshift_client or old_scc_name == new_scc_name:
+            return True
+        
+        logger.info(f"Cleaning up old RBAC resources for SCC name change: {old_scc_name} -> {new_scc_name}")
+        
+        success = True
+        
+        # Find and delete old ClusterRole
+        old_clusterrole_name = f"system:openshift:scc:{old_scc_name}"
+        if openshift_client.get_clusterrole(old_clusterrole_name):
+            logger.info(f"Deleting old ClusterRole: {old_clusterrole_name}")
+            if not openshift_client.delete_clusterrole(old_clusterrole_name):
+                logger.warning(f"Failed to delete old ClusterRole: {old_clusterrole_name}")
+                success = False
+        
+        # Find and delete old RoleBindings
+        for sa in service_accounts:
+            old_rolebinding_name = f"scc-{old_scc_name}-{sa.name}"
+            if openshift_client.get_rolebinding(old_rolebinding_name, sa.namespace):
+                logger.info(f"Deleting old RoleBinding: {old_rolebinding_name} in namespace {sa.namespace}")
+                if not openshift_client.delete_rolebinding(old_rolebinding_name, sa.namespace):
+                    logger.warning(f"Failed to delete old RoleBinding: {old_rolebinding_name}")
+                    success = False
+        
+        return success
+    
+    def handle_scc_name_change(self, analysis: ManifestAnalysis, new_scc_name: str, 
+                               openshift_client=None) -> Dict[str, Any]:
+        """
+        Handle SCC name changes by cleaning up old resources and creating new ones
+        
+        Args:
+            analysis: Manifest analysis
+            new_scc_name: New SCC name to use
+            openshift_client: OpenShift client for cleanup operations
+            
+        Returns:
+            Dict: Dictionary with SCC manifest and cleanup status
+        """
+        # Detect original SCC name
+        original_scc_name = self.detect_original_scc_name_from_manifest(analysis)
+        
+        result = {
+            "scc_manifest": None,
+            "cleanup_needed": False,
+            "cleanup_successful": True,
+            "original_scc_name": original_scc_name,
+            "new_scc_name": new_scc_name
+        }
+        
+        # Generate the SCC with the new name
+        scc_manifest = self.generate_scc_from_requirements(analysis, new_scc_name)
+        result["scc_manifest"] = scc_manifest
+        
+        # Check if cleanup is needed
+        if original_scc_name and original_scc_name != new_scc_name and openshift_client:
+            result["cleanup_needed"] = True
+            
+            # Perform cleanup
+            cleanup_success = self.cleanup_old_rbac_resources(
+                original_scc_name, new_scc_name, analysis.service_accounts, openshift_client
+            )
+            result["cleanup_successful"] = cleanup_success
+            
+            if cleanup_success:
+                logger.info(f"Successfully cleaned up old RBAC resources for SCC {original_scc_name}")
+            else:
+                logger.warning(f"Some old RBAC resources for SCC {original_scc_name} could not be cleaned up")
+        
+        return result 

@@ -76,11 +76,16 @@ def analyze(ctx, path, output, format):
         
         progress.update(task, description="Analysis complete")
     
+    # Analyze SCC status
+    scc_status = _analyze_scc_status(analysis)
+    
     # Display results
     if format == 'table':
         _display_analysis_table(analysis)
+        _display_scc_status_table(scc_status)
     elif format == 'json':
         result = parser.get_analysis_summary(analysis)
+        result['scc_status'] = scc_status
         if output:
             with open(output, 'w') as f:
                 json.dump(result, f, indent=2)
@@ -88,6 +93,7 @@ def analyze(ctx, path, output, format):
             console.print(json.dumps(result, indent=2))
     elif format == 'yaml':
         result = parser.get_analysis_summary(analysis)
+        result['scc_status'] = scc_status
         if output:
             with open(output, 'w') as f:
                 yaml.dump(result, f, default_flow_style=False)
@@ -96,19 +102,21 @@ def analyze(ctx, path, output, format):
     
     # Show summary
     summary = parser.get_analysis_summary(analysis)
+    summary['scc_status'] = scc_status
     _display_summary_panel(summary)
 
 @cli.command()
 @click.argument('manifest_path', type=click.Path(exists=True))
 @click.option('--scc-name', '-n', help='Name for the generated SCC (optional - will detect existing if not provided)')
-@click.option('--output', '-o', type=click.Path(), help='Output file for SCC')
+@click.option('--output', '-o', type=click.Path(), help='Output path: directory for separate files, file path for single file')
+@click.option('--single-file', is_flag=True, help='Save all resources in a single multi-document YAML file (requires file path in --output)')
 @click.option('--suggest-existing', '-s', is_flag=True, help='Suggest existing SCC instead of creating new one')
 @click.option('--optimize', is_flag=True, help='Optimize the generated SCC')
 @click.option('--update-existing', is_flag=True, help='Update existing SCC if found (default behavior)')
 @click.option('--force-new', is_flag=True, help='Force creation of new SCC even if existing ones are found')
 @click.option('--kubeconfig', '-k', type=click.Path(), help='Path to kubeconfig file')
 @click.pass_context
-def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimize, update_existing, force_new, kubeconfig):
+def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimize, update_existing, force_new, kubeconfig, single_file):
     """Generate or update SCC from manifest analysis"""
     console.print(f"[bold blue]Analyzing manifests in: {manifest_path}[/bold blue]")
     
@@ -163,9 +171,25 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
             else:
                 console.print(f"[dim]  Service account {sa.name} in {sa.namespace} has no SCC associations[/dim]")
     
-    # Generate or update SCC - Always use smart logic
+    # Generate or update SCC - Handle SCC name changes properly
     console.print(f"\n[bold]Generating or updating SCC...[/bold]")
-    scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client, force_new)
+    
+    # Check if user provided a custom SCC name that might require cleanup
+    cleanup_info = None
+    if scc_name and openshift_client:
+        # Handle potential SCC name change scenario
+        cleanup_info = scc_generator.handle_scc_name_change(analysis, scc_name, openshift_client)
+        scc_manifest = cleanup_info["scc_manifest"]
+        
+        if cleanup_info["cleanup_needed"]:
+            if cleanup_info["cleanup_successful"]:
+                console.print(f"[green]✓ Cleaned up old RBAC resources for previous SCC: {cleanup_info['original_scc_name']}[/green]")
+            else:
+                console.print(f"[yellow]⚠ Some old RBAC resources for SCC {cleanup_info['original_scc_name']} could not be cleaned up[/yellow]")
+    else:
+        # Use standard logic for other cases
+        scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client, force_new)
+    
     operation = "updated" if existing_scc_found else "created"
     
     if optimize:
@@ -176,13 +200,9 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
     scc_name_final = scc_manifest['metadata']['name']
     console.print(f"\n[bold green]SCC {operation}: {scc_name_final}[/bold green]")
     
-    # Output SCC
-    if output:
-        with open(output, 'w') as f:
-            yaml.dump(scc_manifest, f, default_flow_style=False)
-        console.print(f"[green]SCC saved to: {output}[/green]")
-    else:
-        console.print(Syntax(yaml.dump(scc_manifest, default_flow_style=False), "yaml"))
+    # Show name change information if applicable
+    if cleanup_info and cleanup_info["cleanup_needed"]:
+        console.print(f"[dim]SCC name changed from '{cleanup_info['original_scc_name']}' to '{cleanup_info['new_scc_name']}'[/dim]")
     
     # Generate ClusterRole for SCC
     console.print("\n[bold]Generated ClusterRole:[/bold]")
@@ -191,10 +211,77 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
     
     # Generate role bindings for service accounts
     console.print("\n[bold]Generated Role Bindings:[/bold]")
+    rolebindings = []
     for sa in analysis.service_accounts:
         rolebinding = scc_generator.create_rolebinding(scc_name_final, sa.name, sa.namespace)
+        rolebindings.append((rolebinding, sa))
         console.print(f"RoleBinding for {sa.name} in {sa.namespace}:")
         console.print(Syntax(yaml.dump(rolebinding, default_flow_style=False), "yaml"))
+    
+    # Output all generated resources
+    if output:
+        output_path = Path(output)
+        
+        if single_file:
+            # Single file mode: expect a file path
+            # Ensure parent directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Save all resources in a single multi-document YAML file
+            all_resources = [scc_manifest, clusterrole]
+            all_resources.extend([rb for rb, sa in rolebindings])
+            
+            with open(output_path, 'w') as f:
+                for i, resource in enumerate(all_resources):
+                    if i > 0:
+                        f.write('\n---\n')
+                    yaml.dump(resource, f, default_flow_style=False)
+            
+            console.print(f"[green]All RBAC resources saved to: {output_path}[/green]")
+            console.print(f"[dim]File contains {len(all_resources)} resources: 1 SCC, 1 ClusterRole, {len(rolebindings)} RoleBinding(s)[/dim]")
+        else:
+            # Separate files mode: expect a directory path
+            
+            # If output path doesn't have a suffix and doesn't end with '/', treat it as a directory
+            if not output_path.suffix and not str(output_path).endswith('/'):
+                output_dir = output_path
+            elif output_path.suffix:
+                # If it has a suffix, treat it as a file path and use its parent as directory
+                output_dir = output_path.parent
+            else:
+                # It ends with '/', treat as directory
+                output_dir = output_path
+            
+            # Ensure output directory exists
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate base name for files (use SCC name)
+            base_name = scc_name_final
+            
+            # Save SCC
+            scc_file = output_dir / f"{base_name}-scc.yaml"
+            with open(scc_file, 'w') as f:
+                yaml.dump(scc_manifest, f, default_flow_style=False)
+            console.print(f"[green]SCC saved to: {scc_file}[/green]")
+            
+            # Save ClusterRole
+            clusterrole_file = output_dir / f"{base_name}-clusterrole.yaml"
+            with open(clusterrole_file, 'w') as f:
+                yaml.dump(clusterrole, f, default_flow_style=False)
+            console.print(f"[green]ClusterRole saved to: {clusterrole_file}[/green]")
+            
+            # Save RoleBindings
+            for rolebinding, sa in rolebindings:
+                rolebinding_file = output_dir / f"{base_name}-rolebinding-{sa.name}-{sa.namespace}.yaml"
+                with open(rolebinding_file, 'w') as f:
+                    yaml.dump(rolebinding, f, default_flow_style=False)
+                console.print(f"[green]RoleBinding saved to: {rolebinding_file}[/green]")
+            
+            # Show summary of saved files
+            total_files = 2 + len(rolebindings)  # SCC + ClusterRole + RoleBindings
+            console.print(f"\n[bold green]✓ {total_files} RBAC resource files saved to {output_dir}/[/bold green]")
+    else:
+        console.print(Syntax(yaml.dump(scc_manifest, default_flow_style=False), "yaml"))
     
     # Show what was updated if existing SCC was found
     if existing_scc_found and operation == "updated":
@@ -555,6 +642,71 @@ def _display_analysis_table(analysis):
         
         console.print(table)
 
+def _display_scc_status_table(scc_status):
+    """Display SCC status information in table format"""
+    table = Table(title="SCC Status Analysis")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="white")
+    
+    # Status color coding
+    status_colors = {
+        'no_scc_needed': 'green',
+        'scc_needed': 'yellow',
+        'scc_exists_may_need_update': 'orange'
+    }
+    
+    status_color = status_colors.get(scc_status['status'], 'white')
+    
+    table.add_row("Status", f"[{status_color}]{scc_status['status'].replace('_', ' ').title()}[/{status_color}]")
+    table.add_row("Message", scc_status['message'])
+    table.add_row("Suggested SCC", scc_status['suggested_scc'])
+    
+    if scc_status['existing_scc']:
+        table.add_row("Existing SCC", scc_status['existing_scc'])
+    
+    console.print(table)
+
+def _analyze_scc_status(analysis):
+    """Analyze SCC status and requirements"""
+    scc_generator = SCCGenerator()
+    
+    # Check if there are any security requirements that need SCC
+    if not analysis.security_requirements:
+        return {
+            'status': 'no_scc_needed',
+            'message': 'No SCC needed - manifests use only basic security contexts',
+            'suggested_scc': 'restricted',
+            'existing_scc': None
+        }
+    
+    # Check if manifest already contains an SCC
+    from ..yaml_parser.manifest_parser import ManifestParser
+    parser = ManifestParser()
+    rbac_resources = parser.extract_existing_rbac_resources(analysis.file_path)
+    existing_scc = rbac_resources.get("scc")
+    
+    # Suggest existing SCC that could work
+    suggested_scc = scc_generator.suggest_existing_scc(analysis)
+    
+    # Determine status based on requirements and existing SCC
+    if existing_scc:
+        # Check if existing SCC needs to be updated
+        # For now, assume it might need updating if there are new requirements
+        return {
+            'status': 'scc_exists_may_need_update',
+            'message': f'Found existing SCC "{existing_scc["name"]}" - may need updates based on new requirements',
+            'suggested_scc': suggested_scc,
+            'existing_scc': existing_scc["name"]
+        }
+    else:
+        # No existing SCC, need to create one
+        return {
+            'status': 'scc_needed',
+            'message': f'SCC required - recommend creating new SCC or using existing "{suggested_scc}" SCC',
+            'suggested_scc': suggested_scc,
+            'existing_scc': None
+        }
+
 def _display_summary_panel(summary):
     """Display summary information in a panel"""
     content = f"""
@@ -564,6 +716,7 @@ def _display_summary_panel(summary):
 **Namespaces**: {', '.join(summary['namespaces'])}
 **Errors**: {summary['errors']}
 **Warnings**: {summary['warnings']}
+**SCC Status**: {summary.get('scc_status', {}).get('message', 'Not analyzed')}
     """
     
     console.print(Panel(Markdown(content), title="Analysis Summary", expand=False))
