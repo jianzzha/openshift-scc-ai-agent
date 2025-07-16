@@ -163,19 +163,10 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
             else:
                 console.print(f"[dim]  Service account {sa.name} in {sa.namespace} has no SCC associations[/dim]")
     
-    # Generate or update SCC
-    if force_new or not openshift_client:
-        # Force creation of new SCC
-        if not scc_name:
-            scc_name = f"generated-{hash(manifest_path) % 10000}"
-        console.print(f"\n[bold]Creating new SCC: {scc_name}[/bold]")
-        scc_manifest = scc_generator.generate_scc_from_requirements(analysis, scc_name)
-        operation = "created"
-    else:
-        # Use the smart generate_or_update_scc method
-        console.print(f"\n[bold]Generating or updating SCC...[/bold]")
-        scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client, force_new)
-        operation = "updated" if existing_scc_found else "created"
+    # Generate or update SCC - Always use smart logic
+    console.print(f"\n[bold]Generating or updating SCC...[/bold]")
+    scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client, force_new)
+    operation = "updated" if existing_scc_found else "created"
     
     if optimize:
         scc_manifest = scc_generator.optimize_scc(scc_manifest, analysis)
