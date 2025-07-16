@@ -100,14 +100,17 @@ def analyze(ctx, path, output, format):
 
 @cli.command()
 @click.argument('manifest_path', type=click.Path(exists=True))
-@click.option('--scc-name', '-n', required=True, help='Name for the generated SCC')
+@click.option('--scc-name', '-n', help='Name for the generated SCC (optional - will detect existing if not provided)')
 @click.option('--output', '-o', type=click.Path(), help='Output file for SCC')
 @click.option('--suggest-existing', '-s', is_flag=True, help='Suggest existing SCC instead of creating new one')
 @click.option('--optimize', is_flag=True, help='Optimize the generated SCC')
+@click.option('--update-existing', is_flag=True, help='Update existing SCC if found (default behavior)')
+@click.option('--force-new', is_flag=True, help='Force creation of new SCC even if existing ones are found')
+@click.option('--kubeconfig', '-k', type=click.Path(), help='Path to kubeconfig file')
 @click.pass_context
-def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimize):
-    """Generate SCC from manifest analysis"""
-    console.print(f"[bold blue]Generating SCC for: {manifest_path}[/bold blue]")
+def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimize, update_existing, force_new, kubeconfig):
+    """Generate or update SCC from manifest analysis"""
+    console.print(f"[bold blue]Analyzing manifests in: {manifest_path}[/bold blue]")
     
     # Parse manifests
     parser = ManifestParser()
@@ -124,16 +127,63 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
         console.print(f"[green]Suggested existing SCC: {suggested_scc}[/green]")
         
         if click.confirm("Would you like to see the details of this SCC?"):
-            predefined_scc = scc_generator.predefined_sccs.get(suggested_scc)
+            predefined_scc = scc_generator.predefined_sccs.get(suggested_scc) if suggested_scc else None
             if predefined_scc:
                 console.print(Syntax(yaml.dump(predefined_scc, default_flow_style=False), "yaml"))
         return
     
-    # Generate new SCC
-    scc_manifest = scc_generator.generate_scc_from_requirements(analysis, scc_name)
+    # Connect to cluster if kubeconfig provided and not forcing new SCC
+    openshift_client = None
+    if kubeconfig and not force_new:
+        from src.openshift_client.client import OpenShiftClient
+        openshift_client = OpenShiftClient(kubeconfig)
+        if openshift_client.connect():
+            console.print("[green]✓ Connected to OpenShift cluster[/green]")
+        else:
+            console.print("[yellow]⚠ Failed to connect to cluster, will generate new SCC[/yellow]")
+            openshift_client = None
+    
+    # Check for existing SCC associations
+    existing_scc_found = False
+    if openshift_client and analysis.service_accounts:
+        console.print("\n[bold]Checking for existing SCC associations...[/bold]")
+        
+        # Convert service accounts to format expected by client
+        service_accounts = [
+            {'name': sa.name, 'namespace': sa.namespace} 
+            for sa in analysis.service_accounts
+        ]
+        
+        # Show service accounts being checked
+        for sa in analysis.service_accounts:
+            scc_associations = openshift_client.get_service_account_scc_associations(sa.name, sa.namespace)
+            if scc_associations:
+                console.print(f"[yellow]  Service account {sa.name} in {sa.namespace} is associated with SCCs: {', '.join(scc_associations)}[/yellow]")
+                existing_scc_found = True
+            else:
+                console.print(f"[dim]  Service account {sa.name} in {sa.namespace} has no SCC associations[/dim]")
+    
+    # Generate or update SCC
+    if force_new or not openshift_client:
+        # Force creation of new SCC
+        if not scc_name:
+            scc_name = f"generated-{hash(manifest_path) % 10000}"
+        console.print(f"\n[bold]Creating new SCC: {scc_name}[/bold]")
+        scc_manifest = scc_generator.generate_scc_from_requirements(analysis, scc_name)
+        operation = "created"
+    else:
+        # Use the smart generate_or_update_scc method
+        console.print(f"\n[bold]Generating or updating SCC...[/bold]")
+        scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client)
+        operation = "updated" if existing_scc_found else "created"
     
     if optimize:
         scc_manifest = scc_generator.optimize_scc(scc_manifest, analysis)
+        console.print("[green]✓ SCC optimized[/green]")
+    
+    # Display SCC info
+    scc_name_final = scc_manifest['metadata']['name']
+    console.print(f"\n[bold green]SCC {operation}: {scc_name_final}[/bold green]")
     
     # Output SCC
     if output:
@@ -145,15 +195,54 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
     
     # Generate ClusterRole for SCC
     console.print("\n[bold]Generated ClusterRole:[/bold]")
-    clusterrole = scc_generator.create_clusterrole(scc_name)
+    clusterrole = scc_generator.create_clusterrole(scc_name_final)
     console.print(Syntax(yaml.dump(clusterrole, default_flow_style=False), "yaml"))
     
     # Generate role bindings for service accounts
     console.print("\n[bold]Generated Role Bindings:[/bold]")
     for sa in analysis.service_accounts:
-        rolebinding = scc_generator.create_rolebinding(scc_name, sa.name, sa.namespace)
+        rolebinding = scc_generator.create_rolebinding(scc_name_final, sa.name, sa.namespace)
         console.print(f"RoleBinding for {sa.name} in {sa.namespace}:")
         console.print(Syntax(yaml.dump(rolebinding, default_flow_style=False), "yaml"))
+    
+    # Show what was updated if existing SCC was found
+    if existing_scc_found and operation == "updated":
+        console.print(f"\n[bold yellow]📝 Note:[/bold yellow] Updated existing SCC with new requirements from {manifest_path}")
+        console.print("[dim]The SCC has been extended with additional permissions while preserving existing ones.[/dim]")
+    
+    # Offer to deploy the SCC
+    if openshift_client:
+        if click.confirm(f"\nWould you like to deploy the {operation} SCC and RBAC to the cluster?"):
+            deploy_success = True
+            
+            # Deploy or update SCC
+            if operation == "updated":
+                success = openshift_client.update_scc(scc_manifest)
+            else:
+                success = openshift_client.create_scc(scc_manifest)
+            
+            if success:
+                console.print(f"[green]✓ SCC {operation} successfully[/green]")
+            else:
+                console.print(f"[red]✗ Failed to {operation.replace('d', '')} SCC[/red]")
+                deploy_success = False
+            
+            # Deploy ClusterRole
+            if openshift_client.create_clusterrole(clusterrole):
+                console.print("[green]✓ ClusterRole created successfully[/green]")
+            else:
+                console.print("[yellow]⚠ ClusterRole creation failed or already exists[/yellow]")
+            
+            # Deploy RoleBindings
+            for sa in analysis.service_accounts:
+                rolebinding = scc_generator.create_rolebinding(scc_name_final, sa.name, sa.namespace)
+                if openshift_client.create_rolebinding(rolebinding):
+                    console.print(f"[green]✓ RoleBinding created for {sa.name}[/green]")
+                else:
+                    console.print(f"[yellow]⚠ RoleBinding creation failed for {sa.name}[/yellow]")
+            
+            if deploy_success:
+                console.print(f"\n[bold green]🎉 SCC '{scc_name_final}' and RBAC deployed successfully![/bold green]")
 
 @cli.command()
 @click.option('--kubeconfig', '-k', type=click.Path(), help='Path to kubeconfig file')
@@ -267,12 +356,18 @@ def auto_deploy(ctx, manifest_path, scc_name, kubeconfig, ai_provider, api_key, 
         analyses = parser.parse_directory(manifest_path)
         analysis = parser.combine_analyses(analyses)
     
-    # Generate initial SCC
+    # Generate or update SCC based on existing associations
     scc_generator = SCCGenerator()
     if not scc_name:
         scc_name = f"ai-generated-{hash(manifest_path) % 10000}"
     
-    current_scc = scc_generator.generate_scc_from_requirements(analysis, scc_name)
+    # Check for existing SCC associations and update if found
+    current_scc = scc_generator.generate_or_update_scc(analysis, scc_name, client)
+    operation = "updated" if client.find_existing_scc_for_service_accounts([
+        {'name': sa.name, 'namespace': sa.namespace} for sa in analysis.service_accounts
+    ]) else "created"
+    
+    console.print(f"[bold]SCC {operation}: {current_scc['metadata']['name']}[/bold]")
     
     # Deploy SCC
     if not client.create_scc(current_scc):

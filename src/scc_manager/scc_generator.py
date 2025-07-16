@@ -82,6 +82,147 @@ class SCCGenerator:
         logger.info(f"Generated SCC with {len(analysis.security_requirements)} requirements")
         return scc_yaml
     
+    def update_existing_scc_with_requirements(self, existing_scc: Dict[str, Any], analysis: ManifestAnalysis) -> Dict[str, Any]:
+        """
+        Update an existing SCC with new security requirements
+        
+        Args:
+            existing_scc: Existing SCC manifest
+            analysis: Manifest analysis with new requirements
+            
+        Returns:
+            Dict: Updated SCC manifest
+        """
+        logger.info(f"Updating existing SCC '{existing_scc['metadata']['name']}' with new requirements")
+        
+        # Convert existing SCC to configuration
+        config = self._scc_manifest_to_configuration(existing_scc)
+        
+        # Apply new requirements to existing configuration
+        for req in analysis.security_requirements:
+            self._apply_requirement_to_scc(config, req)
+        
+        # Update description to reflect the merge
+        config.description = f"Updated SCC for manifests from {analysis.file_path}"
+        
+        # Generate updated SCC YAML
+        updated_scc = self._generate_scc_yaml(config)
+        
+        # Preserve important metadata from original SCC
+        if existing_scc['metadata'].get('resourceVersion'):
+            updated_scc['metadata']['resourceVersion'] = existing_scc['metadata']['resourceVersion']
+        if existing_scc['metadata'].get('uid'):
+            updated_scc['metadata']['uid'] = existing_scc['metadata']['uid']
+        if existing_scc['metadata'].get('creationTimestamp'):
+            updated_scc['metadata']['creationTimestamp'] = existing_scc['metadata']['creationTimestamp']
+        
+        # Add annotation about the update
+        if 'annotations' not in updated_scc['metadata']:
+            updated_scc['metadata']['annotations'] = {}
+        updated_scc['metadata']['annotations']['last-updated-by'] = 'openshift-scc-ai-agent'
+        updated_scc['metadata']['annotations']['last-updated-at'] = datetime.now().isoformat()
+        
+        logger.info(f"Updated SCC with {len(analysis.security_requirements)} additional requirements")
+        return updated_scc
+    
+    def _scc_manifest_to_configuration(self, scc_manifest: Dict[str, Any]) -> SCCConfiguration:
+        """
+        Convert SCC manifest to SCCConfiguration for easier manipulation
+        
+        Args:
+            scc_manifest: SCC manifest dictionary
+            
+        Returns:
+            SCCConfiguration: Configuration object
+        """
+        metadata = scc_manifest.get('metadata', {})
+        
+        # Create configuration from manifest
+        config = SCCConfiguration(
+            name=metadata.get('name', ''),
+            description=metadata.get('annotations', {}).get('description', ''),
+            priority=scc_manifest.get('priority', 10)
+        )
+        
+        # Map SCC fields to configuration
+        config.allow_privileged_container = scc_manifest.get('allowPrivilegedContainer', False)
+        config.allow_host_network = scc_manifest.get('allowHostNetwork', False)
+        config.allow_host_pid = scc_manifest.get('allowHostPID', False)
+        config.allow_host_ipc = scc_manifest.get('allowHostIPC', False)
+        config.allow_host_ports = scc_manifest.get('allowHostPorts', False)
+        config.allow_host_directives = scc_manifest.get('allowHostDirVolumePlugin', False)
+        config.read_only_root_filesystem = scc_manifest.get('readOnlyRootFilesystem', False)
+        
+        # Map run as policies
+        config.run_as_user = SCCAllowedPolicy(scc_manifest.get('runAsUser', {}).get('type', 'MustRunAsNonRoot'))
+        config.run_as_group = SCCAllowedPolicy(scc_manifest.get('runAsGroup', {}).get('type', 'MustRunAs'))
+        config.se_linux_context = SCCAllowedPolicy(scc_manifest.get('seLinuxContext', {}).get('type', 'MustRunAs'))
+        config.fs_group = SCCAllowedPolicy(scc_manifest.get('fsGroup', {}).get('type', 'MustRunAs'))
+        config.supplemental_groups = SCCAllowedPolicy(scc_manifest.get('supplementalGroups', {}).get('type', 'MustRunAs'))
+        
+        # Map capability lists
+        config.allowed_capabilities = list(scc_manifest.get('allowedCapabilities', []))
+        config.required_drop_capabilities = list(scc_manifest.get('requiredDropCapabilities', ['ALL']))
+        config.default_add_capabilities = list(scc_manifest.get('defaultAddCapabilities', []))
+        
+        # Map sysctls
+        config.allowed_unsafe_sysctls = list(scc_manifest.get('allowedUnsafeSysctls', []))
+        config.forbidden_sysctls = list(scc_manifest.get('forbiddenSysctls', []))
+        
+        # Map volumes
+        config.allowed_volume_types = list(scc_manifest.get('volumes', []))
+        config.allowed_flex_volumes = list(scc_manifest.get('allowedFlexVolumes', []))
+        config.allowed_host_paths = list(scc_manifest.get('allowedHostPaths', []))
+        
+        # Map security profiles
+        config.seccomp_profiles = list(scc_manifest.get('seccompProfiles', ['runtime/default']))
+        config.apparmor_profiles = list(scc_manifest.get('apparmor_profiles', ['runtime/default']))
+        
+        # Map users and groups
+        config.users = list(scc_manifest.get('users', []))
+        config.groups = list(scc_manifest.get('groups', []))
+        
+        return config
+    
+    def generate_or_update_scc(self, analysis: ManifestAnalysis, scc_name: Optional[str] = None, 
+                               openshift_client=None) -> Dict[str, Any]:
+        """
+        Generate new SCC or update existing one based on service account associations
+        
+        Args:
+            analysis: Manifest analysis
+            scc_name: Preferred SCC name (optional)
+            openshift_client: OpenShift client for checking existing SCCs
+            
+        Returns:
+            Dict: SCC manifest (new or updated)
+        """
+        if not openshift_client:
+            # If no client provided, generate new SCC
+            if not scc_name:
+                scc_name = f"generated-{hash(analysis.file_path) % 10000}"
+            return self.generate_scc_from_requirements(analysis, scc_name)
+        
+        # Convert service accounts to format expected by client
+        service_accounts = [
+            {'name': sa.name, 'namespace': sa.namespace} 
+            for sa in analysis.service_accounts
+        ]
+        
+        # Try to find existing SCC
+        existing_scc = openshift_client.find_existing_scc_for_service_accounts(service_accounts)
+        
+        if existing_scc:
+            # Update existing SCC
+            logger.info(f"Updating existing SCC: {existing_scc['metadata']['name']}")
+            return self.update_existing_scc_with_requirements(existing_scc, analysis)
+        else:
+            # Create new SCC
+            if not scc_name:
+                scc_name = f"generated-{hash(analysis.file_path) % 10000}"
+            logger.info(f"Creating new SCC: {scc_name}")
+            return self.generate_scc_from_requirements(analysis, scc_name)
+    
     def _apply_requirement_to_scc(self, config: SCCConfiguration, requirement: SecurityRequirement):
         """Apply a single security requirement to the SCC configuration"""
         req_type = requirement.requirement_type

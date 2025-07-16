@@ -289,6 +289,136 @@ class OpenShiftClient:
             logger.error(f"Error listing SCCs: {str(e)}")
             return []
     
+    def get_service_account_scc_associations(self, service_account_name: str, namespace: str) -> List[str]:
+        """
+        Get SCCs associated with a service account through RoleBindings and ClusterRoleBindings
+        
+        Args:
+            service_account_name: Name of the service account
+            namespace: Namespace of the service account
+            
+        Returns:
+            List[str]: List of SCC names associated with the service account
+        """
+        if not self.connected:
+            logger.error("Not connected to cluster")
+            return []
+        
+        scc_names = []
+        
+        try:
+            # Check RoleBindings in the namespace
+            if not self.dynamic_client or not self.dynamic_client.resources:
+                logger.error("Dynamic client or resources not available")
+                return []
+            
+            rb_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="RoleBinding"
+            )
+            
+            role_bindings = rb_resource.get(namespace=namespace)
+            if not role_bindings or not hasattr(role_bindings, 'items'):
+                role_bindings = type('MockResponse', (), {'items': []})()  # Create mock response with empty items
+            for rb in role_bindings.items:
+                subjects = rb.get('subjects', [])
+                role_ref = rb.get('roleRef', {})
+                
+                # Check if this service account is in the subjects
+                for subject in subjects:
+                    if (subject.get('kind') == 'ServiceAccount' and 
+                        subject.get('name') == service_account_name and 
+                        subject.get('namespace') == namespace):
+                        
+                        # Check if it references an SCC ClusterRole
+                        if (role_ref.get('kind') == 'ClusterRole' and 
+                            role_ref.get('name', '').startswith('system:openshift:scc:')):
+                            scc_name = role_ref.get('name', '').replace('system:openshift:scc:', '')
+                            if scc_name:
+                                scc_names.append(scc_name)
+            
+            # Check ClusterRoleBindings
+            crb_resource = self.dynamic_client.resources.get(
+                api_version="rbac.authorization.k8s.io/v1",
+                kind="ClusterRoleBinding"
+            )
+            
+            cluster_role_bindings = crb_resource.get()
+            for crb in cluster_role_bindings.items:
+                subjects = crb.get('subjects', [])
+                role_ref = crb.get('roleRef', {})
+                
+                # Check if this service account is in the subjects
+                for subject in subjects:
+                    if (subject.get('kind') == 'ServiceAccount' and 
+                        subject.get('name') == service_account_name and 
+                        subject.get('namespace') == namespace):
+                        
+                        # Check if it references an SCC ClusterRole
+                        if (role_ref.get('kind') == 'ClusterRole' and 
+                            role_ref.get('name', '').startswith('system:openshift:scc:')):
+                            scc_name = role_ref.get('name', '').replace('system:openshift:scc:', '')
+                            if scc_name:
+                                scc_names.append(scc_name)
+                                
+        except Exception as e:
+            logger.error(f"Error getting SCC associations for {service_account_name}: {str(e)}")
+        
+        return list(set(scc_names))  # Remove duplicates
+    
+    def find_existing_scc_for_service_accounts(self, service_accounts: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+        """
+        Find existing SCC that's commonly used by the given service accounts
+        
+        Args:
+            service_accounts: List of service account info dicts with 'name' and 'namespace'
+            
+        Returns:
+            Optional[Dict]: Existing SCC manifest or None if no common SCC found
+        """
+        if not self.connected or not service_accounts:
+            return None
+        
+        # Get SCC associations for all service accounts
+        scc_associations = {}
+        for sa in service_accounts:
+            scc_names = self.get_service_account_scc_associations(sa['name'], sa['namespace'])
+            for scc_name in scc_names:
+                if scc_name not in scc_associations:
+                    scc_associations[scc_name] = []
+                scc_associations[scc_name].append(sa)
+        
+        if not scc_associations:
+            logger.info("No existing SCC associations found for service accounts")
+            return None
+        
+        # Find the most commonly used SCC (or any SCC if only one service account)
+        if len(service_accounts) == 1:
+            # Single service account - use any associated SCC
+            for scc_name in scc_associations:
+                scc_manifest = self.get_scc(scc_name)
+                if scc_manifest:
+                    logger.info(f"Found existing SCC '{scc_name}' for service account {service_accounts[0]['name']}")
+                    return scc_manifest
+        else:
+            # Multiple service accounts - find common SCC
+            for scc_name, associated_sas in scc_associations.items():
+                if len(associated_sas) == len(service_accounts):
+                    # This SCC is used by all service accounts
+                    scc_manifest = self.get_scc(scc_name)
+                    if scc_manifest:
+                        logger.info(f"Found common SCC '{scc_name}' for all service accounts")
+                        return scc_manifest
+            
+            # If no common SCC, use the most frequently used one
+            most_common_scc = max(scc_associations.keys(), key=lambda x: len(scc_associations[x]))
+            scc_manifest = self.get_scc(most_common_scc)
+            if scc_manifest:
+                logger.info(f"Found most common SCC '{most_common_scc}' for service accounts")
+                return scc_manifest
+        
+        return None
+    
     def create_rolebinding(self, rolebinding_manifest: Dict[str, Any]) -> bool:
         """
         Create a RoleBinding

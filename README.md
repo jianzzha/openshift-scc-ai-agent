@@ -235,11 +235,17 @@ python main.py analyze examples/nginx-deployment.yaml
 python main.py analyze examples/ --format json --output analysis.json
 ```
 
-### Example 2: SCC Generation
+### Example 2: SCC Generation and Updates
 
 ```bash
-# Generate SCC for a deployment
+# Auto-detect existing SCCs and update them (default behavior)
+python main.py generate-scc examples/nginx-deployment.yaml -k ~/.kube/config
+
+# Generate new SCC with specific name
 python main.py generate-scc examples/nginx-deployment.yaml -n nginx-scc
+
+# Force creation of new SCC even if existing ones are found
+python main.py generate-scc examples/nginx-deployment.yaml --force-new -n nginx-scc
 
 # Suggest existing SCC instead of creating new one
 python main.py generate-scc examples/nginx-deployment.yaml --suggest-existing
@@ -247,6 +253,13 @@ python main.py generate-scc examples/nginx-deployment.yaml --suggest-existing
 # Generate optimized SCC
 python main.py generate-scc examples/nginx-deployment.yaml -n nginx-scc --optimize
 ```
+
+**New Smart SCC Detection Features:**
+
+- **Automatic Detection**: The agent now automatically detects existing SCCs associated with service accounts in your manifests
+- **Update Existing**: Instead of creating duplicate SCCs, it updates existing ones with new requirements
+- **Preserve Permissions**: Existing SCC permissions are preserved and extended with new requirements
+- **Intelligent Merging**: Combines requirements from multiple manifests while maintaining security boundaries
 
 ### Example 3: AI-Powered Deployment
 
@@ -471,3 +484,57 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Kubernetes SIG-Security for security standards
 - OpenAI for AI capabilities
 - Rich library for beautiful CLI interface 
+
+## Agent Orchestrator Integration
+
+The OpenShift SCC AI Agent is designed to work seamlessly with agent orchestrators and automation systems. The new smart SCC detection and update functionality is particularly valuable for orchestrated environments.
+
+### Key Features for Agent Orchestrators
+
+1. **Automatic SCC Detection**: Detects existing SCCs associated with service accounts
+2. **Smart Updates**: Updates existing SCCs instead of creating duplicates
+3. **Programmatic Interface**: Python API for direct integration
+4. **Structured Output**: JSON/YAML output for easy parsing
+5. **Stateless Operations**: Each operation is independent and can be orchestrated
+
+### Integration Example
+
+```python
+from api_integration_example import SCCAgentOrchestrator
+
+# Initialize orchestrator
+orchestrator = SCCAgentOrchestrator(
+    kubeconfig_path="~/.kube/config",
+    ai_provider="openai",
+    api_key=os.getenv("OPENAI_API_KEY")
+)
+
+# Connect to cluster
+orchestrator.connect_to_cluster()
+
+# Smart SCC generation - automatically detects and updates existing SCCs
+scc_manifest = orchestrator.generate_scc("my-app.yaml")
+
+# Deploy with AI assistance
+results = orchestrator.deploy_with_ai_assistance("my-app.yaml")
+```
+
+### CLI Integration for Orchestrators
+
+```bash
+# Detect existing SCCs and update them
+./run.sh generate-scc my-app.yaml -k ~/.kube/config --format json
+
+# Force new SCC creation if needed
+./run.sh generate-scc my-app.yaml --force-new -n my-new-scc
+
+# Auto-deploy with AI assistance
+./run.sh auto-deploy my-app.yaml --ai-provider openai --max-iterations 3
+```
+
+### Benefits for Orchestrated Environments
+
+- **Prevents SCC Proliferation**: Reuses existing SCCs instead of creating duplicates
+- **Maintains Security Boundaries**: Preserves existing permissions while adding new ones
+- **Reduces RBAC Complexity**: Minimizes the number of ClusterRoles and RoleBindings
+- **Enables Progressive Security**: Allows gradual permission expansion as applications evolve 
