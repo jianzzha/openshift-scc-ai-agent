@@ -442,3 +442,60 @@ class ManifestParser:
                 for sa in analysis.service_accounts
             ]
         } 
+
+    def extract_existing_rbac_resources(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract existing RBAC resources (SCC, ClusterRole, RoleBinding) from manifest
+        
+        Returns:
+            Dict with keys: scc, cluster_roles, role_bindings, cluster_role_bindings
+        """
+        logger.info(f"Extracting existing RBAC resources from: {file_path}")
+        
+        rbac_resources = {
+            "scc": None,
+            "cluster_roles": [],
+            "role_bindings": [],
+            "cluster_role_bindings": []
+        }
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            documents = list(yaml.safe_load_all(content))
+            
+            for doc in documents:
+                if not doc or not isinstance(doc, dict):
+                    continue
+                
+                kind = doc.get('kind', '')
+                metadata = doc.get('metadata', {})
+                resource_name = metadata.get('name', '')
+                
+                if kind == 'SecurityContextConstraints':
+                    rbac_resources["scc"] = {
+                        "name": resource_name,
+                        "manifest": doc
+                    }
+                elif kind == 'ClusterRole':
+                    rbac_resources["cluster_roles"].append({
+                        "name": resource_name,
+                        "manifest": doc
+                    })
+                elif kind == 'RoleBinding':
+                    rbac_resources["role_bindings"].append({
+                        "name": resource_name,
+                        "namespace": metadata.get('namespace', 'default'),
+                        "manifest": doc
+                    })
+                elif kind == 'ClusterRoleBinding':
+                    rbac_resources["cluster_role_bindings"].append({
+                        "name": resource_name,
+                        "manifest": doc
+                    })
+        
+        except Exception as e:
+            logger.error(f"Error extracting RBAC resources from {file_path}: {str(e)}")
+        
+        return rbac_resources 

@@ -174,7 +174,7 @@ def generate_scc(ctx, manifest_path, scc_name, output, suggest_existing, optimiz
     else:
         # Use the smart generate_or_update_scc method
         console.print(f"\n[bold]Generating or updating SCC...[/bold]")
-        scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client)
+        scc_manifest = scc_generator.generate_or_update_scc(analysis, scc_name, openshift_client, force_new)
         operation = "updated" if existing_scc_found else "created"
     
     if optimize:

@@ -161,47 +161,78 @@ class SCCGenerator:
         config.supplemental_groups = SCCAllowedPolicy(scc_manifest.get('supplementalGroups', {}).get('type', 'MustRunAs'))
         
         # Map capability lists
-        config.allowed_capabilities = list(scc_manifest.get('allowedCapabilities', []))
-        config.required_drop_capabilities = list(scc_manifest.get('requiredDropCapabilities', ['ALL']))
-        config.default_add_capabilities = list(scc_manifest.get('defaultAddCapabilities', []))
+        config.allowed_capabilities = list(scc_manifest.get('allowedCapabilities') or [])
+        config.required_drop_capabilities = list(scc_manifest.get('requiredDropCapabilities') or ['ALL'])
+        config.default_add_capabilities = list(scc_manifest.get('defaultAddCapabilities') or [])
         
         # Map sysctls
-        config.allowed_unsafe_sysctls = list(scc_manifest.get('allowedUnsafeSysctls', []))
-        config.forbidden_sysctls = list(scc_manifest.get('forbiddenSysctls', []))
+        config.allowed_unsafe_sysctls = list(scc_manifest.get('allowedUnsafeSysctls') or [])
+        config.forbidden_sysctls = list(scc_manifest.get('forbiddenSysctls') or [])
         
         # Map volumes
-        config.allowed_volume_types = list(scc_manifest.get('volumes', []))
-        config.allowed_flex_volumes = list(scc_manifest.get('allowedFlexVolumes', []))
-        config.allowed_host_paths = list(scc_manifest.get('allowedHostPaths', []))
+        config.allowed_volume_types = list(scc_manifest.get('volumes') or [])
+        config.allowed_flex_volumes = list(scc_manifest.get('allowedFlexVolumes') or [])
+        config.allowed_host_paths = list(scc_manifest.get('allowedHostPaths') or [])
         
         # Map security profiles
-        config.seccomp_profiles = list(scc_manifest.get('seccompProfiles', ['runtime/default']))
-        config.apparmor_profiles = list(scc_manifest.get('apparmor_profiles', ['runtime/default']))
+        config.seccomp_profiles = list(scc_manifest.get('seccompProfiles') or ['runtime/default'])
+        config.apparmor_profiles = list(scc_manifest.get('apparmor_profiles') or ['runtime/default'])
         
         # Map users and groups
-        config.users = list(scc_manifest.get('users', []))
-        config.groups = list(scc_manifest.get('groups', []))
+        config.users = list(scc_manifest.get('users') or [])
+        config.groups = list(scc_manifest.get('groups') or [])
         
         return config
     
     def generate_or_update_scc(self, analysis: ManifestAnalysis, scc_name: Optional[str] = None, 
-                               openshift_client=None) -> Dict[str, Any]:
+                               openshift_client=None, force_new: bool = False) -> Dict[str, Any]:
         """
-        Generate new SCC or update existing one based on service account associations
+        Generate new SCC or update existing one based on manifest content and service account associations
         
         Args:
             analysis: Manifest analysis
-            scc_name: Preferred SCC name (optional)
+            scc_name: Preferred SCC name (optional, overrides manifest SCC name)
             openshift_client: OpenShift client for checking existing SCCs
+            force_new: Force creation of new SCC even if existing ones found
             
         Returns:
             Dict: SCC manifest (new or updated)
         """
-        if not openshift_client:
-            # If no client provided, generate new SCC
+        from ..yaml_parser.manifest_parser import ManifestParser
+        
+        # First, check if the manifest itself contains an SCC
+        parser = ManifestParser()
+        rbac_resources = parser.extract_existing_rbac_resources(analysis.file_path)
+        manifest_scc = rbac_resources.get("scc")
+        
+        # Determine SCC name priority:
+        # 1. User-provided -n flag (scc_name parameter)
+        # 2. SCC name from manifest
+        # 3. Auto-generated name
+        determined_scc_name = scc_name
+        if not determined_scc_name and manifest_scc:
+            determined_scc_name = manifest_scc["name"]
+            logger.info(f"Using SCC name from manifest: {determined_scc_name}")
+        elif not determined_scc_name:
+            determined_scc_name = f"generated-{hash(analysis.file_path) % 10000}"
+        
+        # If manifest has SCC and no -n flag provided, update the manifest SCC
+        if manifest_scc and not scc_name and not force_new:
+            logger.info(f"Updating existing SCC from manifest: {manifest_scc['name']}")
+            return self.update_existing_scc_with_requirements(manifest_scc["manifest"], analysis)
+        
+        # If force_new is True, create new SCC regardless
+        if force_new:
+            # For force_new, always generate new name unless explicitly provided by user
             if not scc_name:
-                scc_name = f"generated-{hash(analysis.file_path) % 10000}"
-            return self.generate_scc_from_requirements(analysis, scc_name)
+                determined_scc_name = f"generated-{hash(analysis.file_path) % 10000}"
+            logger.info(f"Force creating new SCC: {determined_scc_name}")
+            return self.generate_scc_from_requirements(analysis, determined_scc_name)
+        
+        # If no OpenShift client provided, generate new SCC
+        if not openshift_client:
+            logger.info(f"No cluster client provided, generating new SCC: {determined_scc_name}")
+            return self.generate_scc_from_requirements(analysis, determined_scc_name)
         
         # Convert service accounts to format expected by client
         service_accounts = [
@@ -209,19 +240,153 @@ class SCCGenerator:
             for sa in analysis.service_accounts
         ]
         
-        # Try to find existing SCC
-        existing_scc = openshift_client.find_existing_scc_for_service_accounts(service_accounts)
+        # Try to find existing SCC in cluster
+        existing_scc_in_cluster = openshift_client.find_existing_scc_for_service_accounts(service_accounts)
         
-        if existing_scc:
-            # Update existing SCC
-            logger.info(f"Updating existing SCC: {existing_scc['metadata']['name']}")
-            return self.update_existing_scc_with_requirements(existing_scc, analysis)
+        if existing_scc_in_cluster:
+            # Update existing SCC from cluster
+            logger.info(f"Updating existing SCC from cluster: {existing_scc_in_cluster['metadata']['name']}")
+            return self.update_existing_scc_with_requirements(existing_scc_in_cluster, analysis)
         else:
             # Create new SCC
-            if not scc_name:
-                scc_name = f"generated-{hash(analysis.file_path) % 10000}"
-            logger.info(f"Creating new SCC: {scc_name}")
-            return self.generate_scc_from_requirements(analysis, scc_name)
+            logger.info(f"Creating new SCC: {determined_scc_name}")
+            return self.generate_scc_from_requirements(analysis, determined_scc_name)
+    
+    def create_rbac_resources_from_manifest(self, analysis: ManifestAnalysis, scc_name: str) -> Dict[str, Any]:
+        """
+        Create RBAC resources (ClusterRole, RoleBinding) preserving existing names from manifest
+        
+        Args:
+            analysis: Manifest analysis
+            scc_name: SCC name to use
+            
+        Returns:
+            Dict with ClusterRole and RoleBinding manifests
+        """
+        from ..yaml_parser.manifest_parser import ManifestParser
+        
+        parser = ManifestParser()
+        rbac_resources = parser.extract_existing_rbac_resources(analysis.file_path)
+        
+        # Create ClusterRole
+        existing_cluster_role = None
+        for cr in rbac_resources["cluster_roles"]:
+            if f"system:openshift:scc:{scc_name}" in cr["name"]:
+                existing_cluster_role = cr
+                break
+        
+        if existing_cluster_role:
+            cluster_role_name = existing_cluster_role["name"]
+            logger.info(f"Using existing ClusterRole name: {cluster_role_name}")
+        else:
+            cluster_role_name = f"system:openshift:scc:{scc_name}"
+            logger.info(f"Creating new ClusterRole: {cluster_role_name}")
+        
+        cluster_role = self.create_clusterrole_with_name(scc_name, cluster_role_name)
+        
+        # Create RoleBindings for each service account
+        role_bindings = []
+        for sa in analysis.service_accounts:
+            # Check if RoleBinding already exists in manifest
+            existing_binding = None
+            for rb in rbac_resources["role_bindings"]:
+                # Check if this RoleBinding is for this service account and references the SCC
+                rb_subjects = rb.get("manifest", {}).get("subjects", [])
+                rb_roleref = rb.get("manifest", {}).get("roleRef", {})
+                
+                # Check if the binding is for this service account
+                sa_match = any(
+                    subj.get("name") == sa.name and 
+                    subj.get("namespace") == sa.namespace and
+                    subj.get("kind") == "ServiceAccount"
+                    for subj in rb_subjects
+                )
+                
+                # Check if the binding references the SCC's ClusterRole
+                role_match = (
+                    rb_roleref.get("name") == f"system:openshift:scc:{scc_name}" or
+                    scc_name in rb_roleref.get("name", "")
+                )
+                
+                if sa_match and role_match:
+                    existing_binding = rb
+                    break
+            
+            if existing_binding:
+                binding_name = existing_binding["name"]
+                logger.info(f"Using existing RoleBinding name: {binding_name}")
+            else:
+                binding_name = f"scc-{scc_name}-{sa.name}-{sa.namespace}"
+                logger.info(f"Creating new RoleBinding: {binding_name}")
+            
+            role_binding = self.create_rolebinding_with_name(
+                scc_name, sa.name, sa.namespace, binding_name, cluster_role_name
+            )
+            role_bindings.append(role_binding)
+        
+        return {
+            "cluster_role": cluster_role,
+            "role_bindings": role_bindings
+        }
+    
+    def create_clusterrole_with_name(self, scc_name: str, cluster_role_name: str) -> Dict[str, Any]:
+        """Create a ClusterRole with specific name"""
+        logger.info(f"Creating ClusterRole '{cluster_role_name}' for SCC '{scc_name}'")
+        
+        cluster_role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {
+                "name": cluster_role_name,
+                "annotations": {
+                    "generated-by": "openshift-scc-ai-agent",
+                    "generated-at": datetime.now().isoformat(),
+                    "kubernetes.io/description": f"ClusterRole for SCC {scc_name}"
+                }
+            },
+            "rules": [
+                {
+                    "apiGroups": ["security.openshift.io"],
+                    "resources": ["securitycontextconstraints"],
+                    "verbs": ["use"],
+                    "resourceNames": [scc_name]
+                }
+            ]
+        }
+        
+        return cluster_role
+    
+    def create_rolebinding_with_name(self, scc_name: str, service_account: str, namespace: str, 
+                                   binding_name: str, cluster_role_name: str) -> Dict[str, Any]:
+        """Create a RoleBinding with specific name"""
+        logger.info(f"Creating RoleBinding '{binding_name}' for SA '{service_account}' in namespace '{namespace}'")
+        
+        role_binding = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "metadata": {
+                "name": binding_name,
+                "namespace": namespace,
+                "annotations": {
+                    "generated-by": "openshift-scc-ai-agent",
+                    "generated-at": datetime.now().isoformat()
+                }
+            },
+            "subjects": [
+                {
+                    "kind": "ServiceAccount",
+                    "name": service_account,
+                    "namespace": namespace
+                }
+            ],
+            "roleRef": {
+                "kind": "ClusterRole",
+                "name": cluster_role_name,
+                "apiGroup": "rbac.authorization.k8s.io"
+            }
+        }
+        
+        return role_binding
     
     def _apply_requirement_to_scc(self, config: SCCConfiguration, requirement: SecurityRequirement):
         """Apply a single security requirement to the SCC configuration"""
