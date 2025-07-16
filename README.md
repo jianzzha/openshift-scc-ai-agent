@@ -6,11 +6,13 @@ An intelligent AI-powered tool for analyzing Kubernetes/OpenShift YAML manifests
 
 - **🔍 Intelligent Manifest Analysis**: Analyzes YAML manifests to extract security requirements
 - **🛡️ SCC Generation**: Automatically generates Security Context Constraints based on manifest requirements
+- **🔄 Smart SCC Updates**: Detects existing SCCs and updates them instead of creating duplicates
 - **🤖 AI-Powered Adjustments**: Uses OpenAI (currently supported) to analyze deployment failures and suggest SCC fixes
 - **⚡ Auto-Deployment**: Automatically deploys manifests with iterative SCC adjustment
 - **🔧 OpenShift Integration**: Direct integration with OpenShift clusters
 - **📊 Rich CLI Interface**: Beautiful command-line interface with progress bars and tables
 - **🎯 Security-First**: Follows principle of least privilege in SCC generation
+- **🔗 Orchestrator Support**: Programmatic API for agent orchestrator integration
 
 ## Installation
 
@@ -208,20 +210,133 @@ openshift-scc-ai-agent/
 │   ├── yaml_parser/           # YAML manifest parsing
 │   │   └── manifest_parser.py
 │   ├── scc_manager/           # SCC generation and management
-│   │   └── scc_generator.py
+│   │   └── scc_generator.py   # Enhanced with SCC update functionality
 │   ├── openshift_client/      # OpenShift cluster interaction
-│   │   └── client.py
+│   │   └── client.py          # Enhanced with SCC detection
 │   ├── ai_agent/              # AI-powered analysis
 │   │   └── scc_ai_agent.py
 │   └── cli/                   # Command-line interface
-│       └── main.py
+│       └── main.py            # Enhanced with update options
 ├── tests/                     # Test files
 ├── examples/                  # Example manifests
+│   ├── deployment-with-scc.yaml          # Test deployment with SCC
+│   └── deployment-with-scc-updated.yaml  # Enhanced deployment example
 ├── docs/                      # Documentation
 ├── main.py                    # Main entry point
+├── api_integration_example.py # Agent orchestrator integration example
+├── test_scc_update.py         # SCC update functionality tests
 ├── requirements.txt           # Dependencies
 └── README.md                  # This file
 ```
+
+## New Files and Components
+
+### API Integration Example (`api_integration_example.py`)
+A comprehensive example showing how to integrate the SCC AI Agent with orchestrator systems:
+
+```python
+from api_integration_example import SCCAgentOrchestrator
+
+orchestrator = SCCAgentOrchestrator(
+    kubeconfig_path="~/.kube/config",
+    ai_provider="openai"
+)
+
+# Smart SCC generation with automatic detection
+scc_manifest = orchestrator.generate_scc("my-app.yaml")
+
+# Deploy with AI assistance
+results = orchestrator.deploy_with_ai_assistance("my-app.yaml")
+```
+
+**Key Methods:**
+- `connect_to_cluster()`: Connect to OpenShift cluster
+- `analyze_manifests()`: Analyze YAML manifests for security requirements
+- `generate_scc()`: Generate or update SCC based on manifest analysis
+- `deploy_with_ai_assistance()`: Deploy with AI-powered SCC adjustment
+- `get_cluster_sccs()`: Get all SCCs from cluster
+- `cleanup_resources()`: Clean up created resources
+
+### Test Examples (`examples/`)
+- **`deployment-with-scc.yaml`**: Complete deployment manifest with ServiceAccount, SCC, ClusterRole, RoleBinding, and Deployment
+- **`deployment-with-scc-updated.yaml`**: Enhanced version with additional security requirements (hostPath volumes, multiple capabilities)
+
+### SCC Update Testing (`test_scc_update.py`)
+Comprehensive test demonstrating the SCC update functionality:
+- Tests detection of existing SCCs
+- Verifies permission preservation during updates
+- Validates metadata and annotation updates
+- Shows progressive security expansion
+
+## Enhanced Core Functionality
+
+### OpenShift Client Enhancements (`src/openshift_client/client.py`)
+
+**New Methods:**
+- `get_service_account_scc_associations()`: Discovers SCCs associated with service accounts through RoleBindings and ClusterRoleBindings
+- `find_existing_scc_for_service_accounts()`: Finds common SCCs used by multiple service accounts
+- Enhanced RBAC analysis for SCC detection
+
+**Usage Example:**
+```python
+from src.openshift_client.client import OpenShiftClient
+
+client = OpenShiftClient()
+client.connect()
+
+# Find SCCs associated with service accounts
+scc_associations = client.get_service_account_scc_associations(['my-service-account'])
+
+# Find common SCC for multiple service accounts
+common_scc = client.find_existing_scc_for_service_accounts(['sa1', 'sa2'], 'namespace')
+```
+
+### SCC Generator Enhancements (`src/scc_manager/scc_generator.py`)
+
+**New Methods:**
+- `generate_or_update_scc()`: Smart method that detects existing SCCs and updates them instead of creating new ones
+- `update_existing_scc_with_requirements()`: Updates existing SCC with new security requirements while preserving existing permissions
+- `_scc_manifest_to_configuration()`: Converts SCC manifest to SCCConfiguration object for processing
+
+**Key Features:**
+- **Permission Preservation**: Existing SCC permissions are never removed, only extended
+- **Metadata Management**: Preserves resourceVersion, uid, creationTimestamp
+- **Audit Trail**: Adds `last-updated-by` and `last-updated-at` annotations
+- **Intelligent Merging**: Combines requirements from multiple sources
+
+**Usage Example:**
+```python
+from src.scc_manager.scc_generator import SCCGenerator
+
+generator = SCCGenerator()
+
+# Smart SCC generation - updates existing if found, creates new if not
+scc_manifest = generator.generate_or_update_scc(
+    security_requirements,
+    service_accounts,
+    scc_name="my-app-scc",
+    namespace="default",
+    existing_scc=existing_scc_manifest  # Optional: provide existing SCC
+)
+```
+
+### CLI Enhancements (`src/cli/main.py`)
+
+**Enhanced `generate-scc` Command:**
+```bash
+# Smart SCC detection and update (default behavior)
+python main.py generate-scc examples/nginx-deployment.yaml -k ~/.kube/config
+
+# New options:
+--update-existing      # Update existing SCC if found (default: true)
+--force-new           # Force creation of new SCC even if existing ones found
+--kubeconfig PATH     # Connect to cluster for SCC detection
+```
+
+**Enhanced `auto-deploy` Command:**
+- Now uses smart SCC detection by default
+- Displays existing SCC associations
+- Offers to deploy updated SCCs and RBAC
 
 ## Usage Examples
 
@@ -238,8 +353,14 @@ python main.py analyze examples/ --format json --output analysis.json
 ### Example 2: SCC Generation and Updates
 
 ```bash
-# Auto-detect existing SCCs and update them (default behavior)
+# Smart SCC detection and update (NEW - default behavior)
 python main.py generate-scc examples/nginx-deployment.yaml -k ~/.kube/config
+
+# The tool will:
+# 1. Analyze the manifest for service accounts
+# 2. Check cluster for existing SCCs associated with those service accounts
+# 3. Update existing SCCs with new requirements (preserving existing permissions)
+# 4. Create new SCC only if no existing association found
 
 # Generate new SCC with specific name
 python main.py generate-scc examples/nginx-deployment.yaml -n nginx-scc
@@ -260,6 +381,25 @@ python main.py generate-scc examples/nginx-deployment.yaml -n nginx-scc --optimi
 - **Update Existing**: Instead of creating duplicate SCCs, it updates existing ones with new requirements
 - **Preserve Permissions**: Existing SCC permissions are preserved and extended with new requirements
 - **Intelligent Merging**: Combines requirements from multiple manifests while maintaining security boundaries
+- **Audit Trail**: Tracks all changes with metadata annotations (`last-updated-by`, `last-updated-at`)
+- **Progressive Security**: Allows gradual permission expansion as applications evolve
+
+**Example Output:**
+```
+🔍 Analyzing manifest for service accounts...
+Found service account: my-app-sa (namespace: default)
+
+🔍 Checking cluster for existing SCC associations...
+Found existing SCC: my-app-scc (associated with my-app-sa)
+
+📝 Updating existing SCC with new requirements:
+  Current capabilities: [NET_BIND_SERVICE]
+  Adding capabilities: [SETUID, CHOWN, SETGID]
+  Adding host paths: [/tmp (read-write)]
+  Adding volume types: [hostPath]
+
+✅ SCC updated successfully with preserved permissions
+```
 
 ### Example 3: AI-Powered Deployment
 
@@ -485,19 +625,65 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - OpenAI for AI capabilities
 - Rich library for beautiful CLI interface 
 
+## Testing and Validation
+
+### SCC Update Testing
+The `test_scc_update.py` script provides comprehensive testing of the SCC update functionality:
+
+```bash
+# Run SCC update tests
+python test_scc_update.py
+```
+
+**Test Coverage:**
+- Service account SCC association detection
+- Permission preservation during updates
+- Metadata and annotation management
+- Progressive security requirement addition
+- Audit trail validation
+
+### Example Manifests
+The `examples/` directory contains test manifests for different scenarios:
+
+1. **Basic Deployment with SCC** (`deployment-with-scc.yaml`):
+   - ServiceAccount with SCC association
+   - Single capability requirement (`NET_BIND_SERVICE`)
+   - Complete RBAC setup
+
+2. **Enhanced Deployment** (`deployment-with-scc-updated.yaml`):
+   - Additional capabilities (`SETUID`, `CHOWN`, `SETGID`)
+   - Host path volume requirements
+   - Demonstrates SCC update scenarios
+
+**Running Tests:**
+```bash
+# Test basic deployment
+python main.py analyze examples/deployment-with-scc.yaml
+
+# Test enhanced deployment (shows update scenario)
+python main.py analyze examples/deployment-with-scc-updated.yaml
+
+# Test SCC generation from examples
+python main.py generate-scc examples/deployment-with-scc.yaml -n test-scc
+```
+
 ## Agent Orchestrator Integration
 
 The OpenShift SCC AI Agent is designed to work seamlessly with agent orchestrators and automation systems. The new smart SCC detection and update functionality is particularly valuable for orchestrated environments.
 
 ### Key Features for Agent Orchestrators
 
-1. **Automatic SCC Detection**: Detects existing SCCs associated with service accounts
-2. **Smart Updates**: Updates existing SCCs instead of creating duplicates
-3. **Programmatic Interface**: Python API for direct integration
+1. **Automatic SCC Detection**: Detects existing SCCs associated with service accounts through RoleBindings and ClusterRoleBindings
+2. **Smart Updates**: Updates existing SCCs instead of creating duplicates, preserving existing permissions
+3. **Programmatic Interface**: Python API for direct integration via `SCCAgentOrchestrator` class
 4. **Structured Output**: JSON/YAML output for easy parsing
 5. **Stateless Operations**: Each operation is independent and can be orchestrated
+6. **Progressive Security**: Allows gradual permission expansion as applications evolve
 
-### Integration Example
+### Integration Approaches
+
+#### 1. Programmatic Integration
+Use the `SCCAgentOrchestrator` class for direct Python integration:
 
 ```python
 from api_integration_example import SCCAgentOrchestrator
@@ -517,9 +703,16 @@ scc_manifest = orchestrator.generate_scc("my-app.yaml")
 
 # Deploy with AI assistance
 results = orchestrator.deploy_with_ai_assistance("my-app.yaml")
+
+# Get all SCCs from cluster
+sccs = orchestrator.get_cluster_sccs()
+
+# Cleanup resources
+orchestrator.cleanup_resources(["my-app-scc"])
 ```
 
-### CLI Integration for Orchestrators
+#### 2. CLI Integration
+Use the command-line interface for shell-based orchestration:
 
 ```bash
 # Detect existing SCCs and update them
@@ -532,9 +725,97 @@ results = orchestrator.deploy_with_ai_assistance("my-app.yaml")
 ./run.sh auto-deploy my-app.yaml --ai-provider openai --max-iterations 3
 ```
 
+#### 3. JSON/YAML Output Processing
+Parse structured output for decision-making:
+
+```bash
+# Get analysis results in JSON format
+python main.py analyze my-app.yaml --format json --output analysis.json
+
+# Generate SCC with JSON output
+python main.py generate-scc my-app.yaml --format json --output scc.json
+```
+
 ### Benefits for Orchestrated Environments
 
 - **Prevents SCC Proliferation**: Reuses existing SCCs instead of creating duplicates
 - **Maintains Security Boundaries**: Preserves existing permissions while adding new ones
 - **Reduces RBAC Complexity**: Minimizes the number of ClusterRoles and RoleBindings
-- **Enables Progressive Security**: Allows gradual permission expansion as applications evolve 
+- **Enables Progressive Security**: Allows gradual permission expansion as applications evolve
+- **Provides Audit Trail**: Tracks all changes with metadata annotations
+- **Supports Rollback**: Easy identification and rollback of changes
+
+### Integration Examples
+
+#### GitOps Integration
+```yaml
+# ArgoCD/Flux workflow
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+spec:
+  steps:
+  - name: analyze-manifest
+    template: scc-analysis
+    arguments:
+      parameters:
+      - name: manifest
+        value: "{{workflow.parameters.manifest}}"
+  
+  - name: generate-scc
+    template: scc-generation
+    arguments:
+      parameters:
+      - name: analysis-result
+        value: "{{steps.analyze-manifest.outputs.result}}"
+```
+
+#### CI/CD Pipeline Integration
+```bash
+#!/bin/bash
+# CI/CD pipeline step
+
+# Analyze manifest
+python main.py analyze $MANIFEST_PATH --format json --output analysis.json
+
+# Generate or update SCC
+python main.py generate-scc $MANIFEST_PATH \
+  --kubeconfig $KUBECONFIG \
+  --format json \
+  --output scc.json
+
+# Apply to cluster if validation passes
+if [ $? -eq 0 ]; then
+  kubectl apply -f scc.json
+fi
+```
+
+### API Reference for Orchestrators
+
+The `SCCAgentOrchestrator` class provides these key methods:
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `connect_to_cluster()` | Connect to OpenShift cluster | `bool` |
+| `analyze_manifests(path)` | Analyze YAML manifests | `dict` |
+| `generate_scc(manifest_path)` | Generate or update SCC | `dict` |
+| `deploy_with_ai_assistance(path)` | Deploy with AI help | `dict` |
+| `get_cluster_sccs()` | Get all cluster SCCs | `list` |
+| `cleanup_resources(resources)` | Clean up resources | `bool` |
+
+### Error Handling for Orchestrators
+
+The agent provides structured error responses for orchestrator handling:
+
+```python
+try:
+    result = orchestrator.generate_scc("manifest.yaml")
+except Exception as e:
+    # Handle errors gracefully
+    error_info = {
+        "error": str(e),
+        "component": "scc-generation",
+        "manifest": "manifest.yaml",
+        "timestamp": datetime.now().isoformat()
+    }
+    # Log or handle error appropriately
+``` 
