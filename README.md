@@ -96,19 +96,19 @@ scc-ai-agent --help
 ### 1. Analyze Manifests
 
 ```bash
-python main.py analyze examples/sample-deployment.yaml
+python main.py analyze examples/deployment-with-scc.yaml
 ```
 
 ### 2. Generate SCC
 
 ```bash
-python main.py generate-scc examples/sample-deployment.yaml -n my-app-scc
+python main.py generate-scc examples/deployment-with-scc.yaml -n my-app-scc
 ```
 
 ### 3. Deploy with AI Assistance
 
 ```bash
-python main.py auto-deploy examples/sample-deployment.yaml --ai-provider openai
+python main.py auto-deploy examples/deployment-with-scc.yaml --ai-provider openai
 ```
 
 ## Command Reference
@@ -557,7 +557,7 @@ oc adm policy add-cluster-role-to-user cluster-admin myuser
 echo $OPENAI_API_KEY
 
 # Enable verbose logging
-python main.py --verbose auto-deploy examples/app.yaml
+python main.py --verbose auto-deploy examples/deployment-with-scc.yaml
 ```
 
 ### Debug Mode
